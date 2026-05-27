@@ -621,7 +621,7 @@ async def _executar_importacao(
                     if (btn) btn.click();
                 }"""
             )
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(2500)
             corrigidos = await _corrigir_inconsistentes(page)
             logger.info("Inconsistentes corrigidos: %d", corrigidos)
             try:
@@ -821,37 +821,36 @@ async def _executar_importacao(
 
 async def _corrigir_inconsistentes(page) -> int:
     """
-    Para cada frete Inconsistente: clica no botão de exclamação, preenche
-    a Natureza no modal e salva. Retorna o número de fretes corrigidos.
+    Para cada frete Inconsistente: clica no botão ! (red-soft sem href),
+    preenche a Natureza no modal e salva. Retorna o número de fretes corrigidos.
     """
     corrigidos = 0
 
     while True:
-        # Usa JS para encontrar o botão de exclamação sem depender de :has()
-        btn_href = await page.evaluate(
+        await page.wait_for_timeout(500)
+
+        # Clica diretamente via JS — o botão é um <a> sem href, locator por href não funciona
+        clicou = await page.evaluate(
             """() => {
-                const rows = document.querySelectorAll(
-                    '#freights_table tbody tr, #tab-freights tbody tr, tbody tr'
-                );
+                const tab = document.querySelector('#tab-freights') || document.body;
+                const rows = tab.querySelectorAll('tbody tr');
                 for (const row of rows) {
-                    if (row.querySelector('i.fa-exclamation-triangle, i.fa-exclamation')) {
-                        const link = row.querySelector('a.red-soft, a[class*="red"], a[href*="sketch"]');
-                        if (link) return link.href;
+                    const icon = row.querySelector(
+                        'i.fa-exclamation, i.fa-exclamation-triangle, i[class*="exclamation"]'
+                    );
+                    if (icon) {
+                        const btn = row.querySelector('a.red-soft, a[class*="red-soft"]');
+                        if (btn) { btn.click(); return true; }
                     }
                 }
-                return null;
+                // Fallback: qualquer red-soft visível no tab
+                const btn = tab.querySelector('a.red-soft');
+                if (btn) { btn.click(); return true; }
+                return false;
             }"""
         )
-        if not btn_href:
+        if not clicou:
             break
-
-        # Clica no link encontrado
-        btn = page.locator(f'a[href="{btn_href}"]').first
-        if await btn.count() == 0:
-            btn = page.locator('a.red-soft, a[href*="sketch"]').first
-        if await btn.count() == 0:
-            break
-        await btn.click()
 
         # Aguarda modal abrir
         try:
@@ -860,11 +859,12 @@ async def _corrigir_inconsistentes(page) -> int:
             await page.wait_for_timeout(2000)
         await page.wait_for_timeout(800)
 
-        # Seleciona Natureza da Mercadoria
+        # Seleciona Natureza da Mercadoria — digita "Preparações à base de cereais"
+        # para encontrar "Preparações à base de cereais, farinhas, amidos, féculas ou leite"
         await _select2_selecionar_por_nome(
             page,
             "freight_sketch_product_classification_id",
-            "Preparações a base de cereais e farinhas",
+            "Preparações à base de cereais",
         )
         await page.wait_for_timeout(500)
 
