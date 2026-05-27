@@ -1584,9 +1584,13 @@ async def _preencher_fretes(
 
     async def _salvar(edit_page):
         """Clica em Salvar e aguarda resposta sem depender de networkidle."""
-        btn = edit_page.locator("#submitFreight, button[type='submit'].btn-primary").first
-        await btn.wait_for(state="visible", timeout=10000)
-        await btn.click()
+        btn = edit_page.locator("#submitFreight, #submit, button[type='submit'].btn-primary").first
+        await btn.wait_for(state="attached", timeout=10000)
+        try:
+            await btn.scroll_into_view_if_needed(timeout=3000)
+        except Exception:
+            pass
+        await btn.click(force=True)
         # Aguarda modal de confirmação ou redirect — não usa networkidle
         await edit_page.wait_for_timeout(1500)
         try:
@@ -1641,20 +1645,12 @@ async def _preencher_fretes(
 
         if tipo == "TRANSFERENCIA":
             if numero_pbr:
-                for sel in ["#freight_normal_pbr_document", "[name*='pbr']", "[id*='pbr']"]:
-                    campo_pbr = edit_page.locator(sel)
-                    if await campo_pbr.count() > 0:
-                        try:
-                            await campo_pbr.first.wait_for(state="visible", timeout=3000)
-                            await campo_pbr.first.click(click_count=3)
-                            await campo_pbr.first.fill(numero_pbr)
-                            await edit_page.wait_for_timeout(300)
-                            logger.info("PBR preenchido (%s): %s", sel, numero_pbr)
-                        except Exception:
-                            pass
-                        break
-                else:
-                    logger.warning("Campo PBR nao encontrado — numero_pbr nao inserido.")
+                campo_pbr = edit_page.locator("#freight_normal_comments")
+                await campo_pbr.wait_for(state="attached", timeout=5000)
+                await campo_pbr.click(click_count=3)
+                await campo_pbr.fill(f"{numero_pbr} NUMERO DA NOTA DE PALETES")
+                await edit_page.wait_for_timeout(300)
+                logger.info("PBR preenchido em comments: %s", numero_pbr)
 
         elif tipo == "COLETA DE PBR":
             await _select2_selecionar_por_nome(
