@@ -624,14 +624,46 @@ async def _executar_importacao(
             await page.wait_for_timeout(2500)
             corrigidos = await _corrigir_inconsistentes(page)
             logger.info("Inconsistentes corrigidos: %d", corrigidos)
-            try:
-                await page.wait_for_function(
-                    """() => !document.querySelector('#tab-freights tbody .fa-spinner, #tab-freights tbody .fa-spin')""",
-                    timeout=120000,
+
+            # Aguarda todos os fretes saírem de Inconsistente → Pendente
+            # Recarrega a página a cada ciclo até Inconsistentes = 0 ou timeout
+            import time as _time2
+            _inicio_inc = _time2.monotonic()
+            MAX_AGUARDA_INC = 180  # 3 minutos
+            while True:
+                if lote:
+                    await page.goto(f"{BASE_URL}/edi/import/batches/{lote}")
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=15000)
+                    except Exception:
+                        await page.wait_for_timeout(2000)
+                    await page.click('a[href="#tab-freights"]')
+                    await page.wait_for_timeout(2000)
+
+                tab_txt_inc = await page.evaluate(
+                    "() => (document.querySelector('#tab-freights') || document.body).textContent"
                 )
-            except Exception:
-                pass
-            await page.wait_for_timeout(1500)
+                import re as _re2
+                m_inc2 = _re2.search(r"Inconsistentes\s*-\s*(\d+)", tab_txt_inc)
+                qtd_inc_restante = int(m_inc2.group(1)) if m_inc2 else 0
+
+                if qtd_inc_restante == 0:
+                    logger.info("Todos os fretes saíram de Inconsistente. Seguindo para Pendentes.")
+                    break
+
+                _decorrido_inc = _time2.monotonic() - _inicio_inc
+                if _decorrido_inc >= MAX_AGUARDA_INC:
+                    logger.warning(
+                        "Timeout: ainda %d frete(s) Inconsistente(s) após %.0fs.",
+                        qtd_inc_restante, _decorrido_inc,
+                    )
+                    break
+
+                logger.info(
+                    "Ainda %d frete(s) Inconsistente(s) (%.0fs) — aguardando...",
+                    qtd_inc_restante, _decorrido_inc,
+                )
+                await page.wait_for_timeout(5000)
         else:
             logger.info("Nenhum frete Inconsistente — seguindo para Pendentes.")
     except Exception as e:
