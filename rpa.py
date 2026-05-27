@@ -110,7 +110,7 @@ class TxtItem(BaseModel):
 class ImportarRequest(BaseModel):
     customer_id: str
     corporation_id: str = "MANDALOG OPERACOES E LOGISTICAS"
-    customer_name: str | None = None
+    customer_name: str = "BAGLEY CPS"
     # formato N8N: lista de itens {filename, numero_oc, xml}
     items: list[TxtItem] | None = None
     # formatos legados
