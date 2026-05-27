@@ -1657,10 +1657,12 @@ async def _preencher_fretes(
                     logger.warning("Campo PBR nao encontrado — numero_pbr nao inserido.")
 
         elif tipo == "COLETA DE PBR":
-            await _select2_selecionar_por_nome(edit_page, "freight_normal_nature_id", "PALETES")
+            await _select2_selecionar_por_nome(
+                edit_page, "freight_normal_product_classification_id", "PALETES"
+            )
             await edit_page.wait_for_timeout(500)
             await _select2_selecionar_por_nome(
-                edit_page, "freight_normal_product_classification_id", "COLETA DE PALETES"
+                edit_page, "freight_normal_freight_classification_id", "COLETA DE PALETES"
             )
             await edit_page.wait_for_timeout(500)
 
