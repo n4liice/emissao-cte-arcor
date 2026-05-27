@@ -1,0 +1,22 @@
+# Credenciais — nunca subir
+.env
+
+# Backup local
+browser2.py
+
+# Dados de sessão e logs gerados em runtime
+data/
+logs/
+
+# Script de teste local
+test_request.py
+
+# Claude Code (memória local)
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
