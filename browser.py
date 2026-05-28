@@ -1615,14 +1615,21 @@ async def _preencher_fretes(
         await page.wait_for_timeout(2000)
 
     async def _salvar(edit_page):
-        """Clica em Salvar e aguarda resposta sem depender de networkidle."""
-        btn = edit_page.locator("#submitFreight, #submit, button[type='submit'].btn-primary").first
-        await btn.wait_for(state="attached", timeout=10000)
-        try:
-            await btn.scroll_into_view_if_needed(timeout=3000)
-        except Exception:
-            pass
-        await btn.click(force=True)
+        """Clica em Salvar via JS — ignora visibilidade (botão tem tabindex=-1)."""
+        await edit_page.wait_for_selector(
+            "#submit, #submitFreight, button[type='submit'].btn-primary",
+            state="attached",
+            timeout=10000,
+        )
+        clicou = await edit_page.evaluate("""() => {
+            const btn = document.querySelector(
+                '#submit, #submitFreight, button[type="submit"].btn-primary'
+            );
+            if (btn) { btn.click(); return true; }
+            return false;
+        }""")
+        if not clicou:
+            raise RuntimeError("Botão Salvar não encontrado no formulário de edição.")
         # Aguarda modal de confirmação ou redirect — não usa networkidle
         await edit_page.wait_for_timeout(1500)
         try:
