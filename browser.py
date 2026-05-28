@@ -621,7 +621,18 @@ async def _executar_importacao(
                     if (btn) btn.click();
                 }"""
             )
-            await page.wait_for_timeout(2500)
+            # Aguarda as linhas do filtro Inconsistentes aparecerem
+            try:
+                await page.wait_for_function(
+                    """() => {
+                        const tab = document.querySelector('#tab-freights');
+                        if (!tab) return false;
+                        return tab.querySelector('tbody tr a.red-soft') !== null;
+                    }""",
+                    timeout=10000,
+                )
+            except Exception:
+                await page.wait_for_timeout(2500)
             corrigidos = await _corrigir_inconsistentes(page)
             logger.info("Inconsistentes corrigidos: %d", corrigidos)
 
@@ -1649,8 +1660,7 @@ async def _preencher_fretes(
             pass
 
     async def _editar_frete(edit_page):
-        """Preenche os campos do formulário de edição de frete."""
-        # Aguarda a página carregar e o Vue renderizar o formulário
+        """Preenche os campos do formulário de edição de frete via JS (headless-safe)."""
         try:
             await edit_page.wait_for_load_state("domcontentloaded", timeout=15000)
         except Exception:
@@ -1660,36 +1670,43 @@ async def _preencher_fretes(
             state="attached",
             timeout=20000,
         )
-        await edit_page.wait_for_timeout(500)
+        await edit_page.wait_for_timeout(800)
 
         logger.info("Editando frete — tipo=%s | oc=%s | pbr=%s | url=%s",
                     tipo, oc, numero_pbr, edit_page.url)
 
-        # Clica na aba Principal (garante que os campos estejam visíveis)
-        tab_principal = edit_page.locator("a.btn-sticky[href='#tab-main-form']")
-        if await tab_principal.count() > 0:
-            await tab_principal.click()
-            await edit_page.wait_for_timeout(600)
+        # Clica na aba Principal via JS
+        await edit_page.evaluate("""() => {
+            const tab = document.querySelector("a.btn-sticky[href='#tab-main-form']");
+            if (tab) tab.click();
+        }""")
+        await edit_page.wait_for_timeout(600)
+
+        def _set_value_js(selector, value):
+            return f"""() => {{
+                const el = document.querySelector('{selector}');
+                if (!el) return false;
+                const proto = el.tagName === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (setter) setter.call(el, {repr(value)});
+                else el.value = {repr(value)};
+                el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                return true;
+            }}"""
 
         # Preenche OC
         if oc:
-            campo_oc = edit_page.locator("#freight_normal_reference_number")
-            await campo_oc.wait_for(state="visible", timeout=10000)
-            await campo_oc.triple_click() if hasattr(campo_oc, "triple_click") else await campo_oc.click(click_count=3)
-            await campo_oc.fill(oc)
-            await edit_page.wait_for_timeout(300)
-            logger.info("OC preenchida: %s", oc)
-        else:
-            logger.warning("OC nao informada.")
+            ok = await edit_page.evaluate(_set_value_js("#freight_normal_reference_number", oc))
+            logger.info("OC preenchida: %s", oc) if ok else logger.warning("Campo OC nao encontrado.")
 
         if tipo == "TRANSFERENCIA":
             if numero_pbr:
-                campo_pbr = edit_page.locator("#freight_normal_comments")
-                await campo_pbr.wait_for(state="attached", timeout=5000)
-                await campo_pbr.click(click_count=3)
-                await campo_pbr.fill(f"{numero_pbr} NUMERO DA NOTA DE PALETES")
-                await edit_page.wait_for_timeout(300)
-                logger.info("PBR preenchido em comments: %s", numero_pbr)
+                valor_pbr = f"{numero_pbr} NUMERO DA NOTA DE PALETES"
+                ok = await edit_page.evaluate(_set_value_js("#freight_normal_comments", valor_pbr))
+                logger.info("PBR preenchido: %s", numero_pbr) if ok else logger.warning("Campo comments nao encontrado.")
 
         elif tipo == "COLETA DE PBR":
             await _select2_selecionar_por_nome(
@@ -1713,7 +1730,19 @@ async def _preencher_fretes(
             if (btn) btn.click();
         }"""
     )
-    await page.wait_for_timeout(1000)
+    # Aguarda as linhas Pendentes aparecerem no DOM
+    try:
+        await page.wait_for_function(
+            """() => {
+                const tab = document.querySelector('#tab-freights');
+                if (!tab) return false;
+                const rows = tab.querySelectorAll('tbody tr');
+                return rows.length > 0 && !tab.textContent.includes('Nenhum frete localizado');
+            }""",
+            timeout=10000,
+        )
+    except Exception:
+        await page.wait_for_timeout(2000)
 
     hrefs = await page.evaluate(
         """() => {
