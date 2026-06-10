@@ -636,16 +636,12 @@ async def _executar_importacao(
             corrigidos = await _corrigir_inconsistentes(page)
             logger.info("Inconsistentes corrigidos: %d", corrigidos)
 
-            # Aguarda todos os fretes saírem de Inconsistente → Pendente
-            # Recarrega a página a cada ciclo até Inconsistentes = 0 ou timeout
-            import time as _time2
+            # Após corrigir: recarrega → clica Pendentes → confirma que saiu de Inconsistentes
             import re as _re_lote
-            _inicio_inc = _time2.monotonic()
-            MAX_AGUARDA_INC = 180  # 3 minutos
-            # Resolve URL do lote — usa lote extraído ou extrai da URL atual
             _m_lote_url = _re_lote.search(r'/batches/(\d+)', page.url)
             _lote_id = lote or (_m_lote_url.group(1) if _m_lote_url else None)
-            while True:
+            MAX_CHECKS_PEND = 20
+            for _chk in range(MAX_CHECKS_PEND):
                 if _lote_id:
                     await page.goto(f"{BASE_URL}/edi/import/batches/{_lote_id}")
                     try:
@@ -655,30 +651,36 @@ async def _executar_importacao(
                     await page.click('a[href="#tab-freights"]')
                     await page.wait_for_timeout(2000)
 
-                tab_txt_inc = await page.evaluate(
-                    "() => (document.querySelector('#tab-freights') || document.body).textContent"
-                )
-                import re as _re2
-                m_inc2 = _re2.search(r"Inconsistentes\s*-\s*(\d+)", tab_txt_inc)
-                qtd_inc_restante = int(m_inc2.group(1)) if m_inc2 else 0
+                # Clica em Pendentes
+                await page.evaluate("""() => {
+                    const btns = Array.from(document.querySelectorAll('#tab-freights .btn.btn-sticky'));
+                    const btn = btns.find(b => b.textContent.trim().startsWith('Pendentes'));
+                    if (btn) btn.click();
+                }""")
+                await page.wait_for_timeout(2000)
 
-                if qtd_inc_restante == 0:
-                    logger.info("Todos os fretes saíram de Inconsistente. Seguindo para Pendentes.")
-                    break
-
-                _decorrido_inc = _time2.monotonic() - _inicio_inc
-                if _decorrido_inc >= MAX_AGUARDA_INC:
-                    logger.warning(
-                        "Timeout: ainda %d frete(s) Inconsistente(s) após %.0fs.",
-                        qtd_inc_restante, _decorrido_inc,
-                    )
-                    break
-
+                status_pend = await page.evaluate("""() => {
+                    const tab = document.querySelector('#tab-freights');
+                    if (!tab) return {rows: 0, inconsistentes: 1};
+                    const txt = tab.textContent || '';
+                    const mInc = txt.match(/Inconsistentes\s*-\s*(\d+)/);
+                    return {
+                        rows: tab.querySelectorAll('tbody tr').length,
+                        inconsistentes: mInc ? parseInt(mInc[1]) : 0
+                    };
+                }""")
                 logger.info(
-                    "Ainda %d frete(s) Inconsistente(s) (%.0fs) — aguardando...",
-                    qtd_inc_restante, _decorrido_inc,
+                    "Verificação %d: pendentes_rows=%d inconsistentes=%d",
+                    _chk + 1, status_pend.get("rows", 0), status_pend.get("inconsistentes", 0),
                 )
+
+                if status_pend.get("rows", 0) > 0 and status_pend.get("inconsistentes", 0) == 0:
+                    logger.info("Frete confirmado em Pendentes. Seguindo para Passo 21.")
+                    break
+
                 await page.wait_for_timeout(5000)
+            else:
+                logger.warning("Frete pode ainda estar em processamento após %d verificações.", MAX_CHECKS_PEND)
         else:
             logger.info("Nenhum frete Inconsistente — seguindo para Pendentes.")
     except Exception as e:
