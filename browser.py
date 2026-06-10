@@ -639,11 +639,15 @@ async def _executar_importacao(
             # Aguarda todos os fretes saírem de Inconsistente → Pendente
             # Recarrega a página a cada ciclo até Inconsistentes = 0 ou timeout
             import time as _time2
+            import re as _re_lote
             _inicio_inc = _time2.monotonic()
             MAX_AGUARDA_INC = 180  # 3 minutos
+            # Resolve URL do lote — usa lote extraído ou extrai da URL atual
+            _m_lote_url = _re_lote.search(r'/batches/(\d+)', page.url)
+            _lote_id = lote or (_m_lote_url.group(1) if _m_lote_url else None)
             while True:
-                if lote:
-                    await page.goto(f"{BASE_URL}/edi/import/batches/{lote}")
+                if _lote_id:
+                    await page.goto(f"{BASE_URL}/edi/import/batches/{_lote_id}")
                     try:
                         await page.wait_for_load_state("networkidle", timeout=15000)
                     except Exception:
@@ -911,10 +915,21 @@ async def _corrigir_inconsistentes(page) -> int:
         )
         await page.wait_for_timeout(500)
 
-        # Salvar e Processar
-        salvar = page.locator('#new_freight_sketch button#submit, #sketch-modal button[type="submit"]').first
-        await salvar.wait_for(state="visible", timeout=5000)
-        await salvar.click()
+        # Salvar e Processar via JS (botão pode estar hidden em headless)
+        await page.wait_for_selector(
+            '#new_freight_sketch button#submit, #sketch-modal button[type="submit"]',
+            state="attached",
+            timeout=5000,
+        )
+        clicou_sketch = await page.evaluate("""() => {
+            const btn = document.querySelector(
+                '#new_freight_sketch button#submit, #sketch-modal button[type="submit"]'
+            );
+            if (btn) { btn.click(); return true; }
+            return false;
+        }""")
+        if not clicou_sketch:
+            logger.warning("Botão Salvar do sketch não encontrado.")
 
         # Aguarda modal fechar
         try:
