@@ -182,12 +182,14 @@ async def _executar_importacao(
             logger.info("Preenchendo OC: %s", oc)
             preencheu = await page.evaluate(
                 """(oc) => {
-                    const campo = document.querySelector('input[name="edi_import_batch[confirm_invoice_by_order_number]"]');
-                    if (!campo) return false;
-                    campo.value = oc;
-                    campo.dispatchEvent(new Event('input', { bubbles: true }));
-                    campo.dispatchEvent(new Event('change', { bubbles: true }));
-                    return campo.name;
+                    const el = document.querySelector('input[name="edi_import_batch[confirm_invoice_by_order_number]"]');
+                    if (!el) return false;
+                    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                    if (setter) setter.call(el, oc);
+                    else el.value = oc;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
                 }""",
                 oc,
             )
@@ -338,14 +340,23 @@ async def _executar_importacao(
 
         lote = await page.evaluate(
             """() => {
-                const m = window.location.href.match(/batches\\/([0-9]+)/);
-                if (m) return m[1];
+                // 1. URL direta
+                const mUrl = window.location.href.match(/batches\\/([0-9]+)/);
+                if (mUrl) return mUrl[1];
 
-                for (const sel of ['h1', '.page-title', '.alert-success', '[data-lote]']) {
+                // 2. Atributos href / action / data-url em qualquer elemento
+                for (const el of document.querySelectorAll('[href*="/batches/"],[action*="/batches/"],[data-url*="/batches/"]')) {
+                    const val = el.getAttribute('href') || el.getAttribute('action') || el.getAttribute('data-url') || '';
+                    const m = val.match(/\\/batches\\/(\\d+)/);
+                    if (m) return m[1];
+                }
+
+                // 3. Headings com número >= 4 dígitos
+                for (const sel of ['h1','h2','h3','h4','.page-title','.panel-title','[data-lote]']) {
                     const el = document.querySelector(sel);
                     if (el) {
-                        const n = el.textContent.trim().match(/[0-9]{4,}/);
-                        if (n) return n[0];
+                        const m = (el.textContent || '').match(/[0-9]{4,}/);
+                        if (m) return m[0];
                     }
                 }
                 return null;
@@ -353,19 +364,15 @@ async def _executar_importacao(
         )
 
         if not lote:
-            # ESL Cloud carrega via AJAX — tenta extrair do conteúdo da página
+            # Aguarda possível redirect tardio e tenta novamente
+            await page.wait_for_timeout(4000)
             lote = await page.evaluate(
                 """() => {
-                    for (const sel of ['h1','h2','h3','h4','.modal-title','.page-title','.panel-title','[data-lote]']) {
-                        const el = document.querySelector(sel);
-                        if (el) {
-                            const m = (el.textContent || '').match(/[0-9]{4,}/);
-                            if (m) return m[0];
-                        }
-                    }
-                    for (const form of document.querySelectorAll('form')) {
-                        const action = form.getAttribute('action') || '';
-                        const m = action.match(/batches\\/([0-9]+)/);
+                    const mUrl = window.location.href.match(/batches\\/([0-9]+)/);
+                    if (mUrl) return mUrl[1];
+                    for (const el of document.querySelectorAll('[href*="/batches/"],[action*="/batches/"]')) {
+                        const val = el.getAttribute('href') || el.getAttribute('action') || '';
+                        const m = val.match(/\\/batches\\/(\\d+)/);
                         if (m) return m[1];
                     }
                     return null;
@@ -558,8 +565,8 @@ async def _executar_importacao(
             decorrido = _time.monotonic() - _inicio
 
             await page.click('a[href="#tab-freights"]')
-            # Espera progressiva: 4s nas primeiras tentativas, cresce até 15s
-            wait_aba = min(4000 + tentativa * 500, 15000)
+            # Espera progressiva: 2s iniciais, cresce até 10s
+            wait_aba = min(2000 + tentativa * 1000, 10000)
             await page.wait_for_timeout(wait_aba)
 
             tem_fretes = await page.evaluate(
@@ -591,8 +598,8 @@ async def _executar_importacao(
                 decorrido,
             )
             await page.click('a[href="#tab-invoices"]')
-            # Espera progressiva ao voltar: 6s no início, cresce até 20s
-            wait_volta = min(6000 + tentativa * 500, 20000)
+            # Espera progressiva ao voltar: 3s iniciais, cresce até 12s
+            wait_volta = min(3000 + tentativa * 1000, 12000)
             await page.wait_for_timeout(wait_volta)
 
     except Exception as e:
@@ -674,8 +681,11 @@ async def _executar_importacao(
                     _chk + 1, status_pend.get("rows", 0), status_pend.get("inconsistentes", 0),
                 )
 
-                if status_pend.get("rows", 0) > 0 and status_pend.get("inconsistentes", 0) == 0:
-                    logger.info("Frete confirmado em Pendentes. Seguindo para Passo 21.")
+                if status_pend.get("rows", 0) > 0:
+                    logger.info(
+                        "Fretes em Pendentes: %d (inconsistentes restantes: %d). Seguindo para Passo 21.",
+                        status_pend.get("rows", 0), status_pend.get("inconsistentes", 0),
+                    )
                     break
 
                 await page.wait_for_timeout(5000)
@@ -1721,6 +1731,12 @@ async def _preencher_fretes(
 
         if tipo == "TRANSFERENCIA":
             if numero_pbr:
+                try:
+                    await edit_page.wait_for_selector(
+                        "#freight_normal_comments", state="attached", timeout=5000
+                    )
+                except Exception:
+                    pass
                 valor_pbr = f"{numero_pbr} NUMERO DA NOTA DE PALETES"
                 ok = await edit_page.evaluate(_set_value_js("#freight_normal_comments", valor_pbr))
                 logger.info("PBR preenchido: %s", numero_pbr) if ok else logger.warning("Campo comments nao encontrado.")
