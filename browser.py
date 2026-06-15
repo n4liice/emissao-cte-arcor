@@ -1709,37 +1709,75 @@ async def _preencher_fretes(
         }""")
         await edit_page.wait_for_timeout(600)
 
-        def _set_value_js(selector, value):
-            return f"""() => {{
-                const el = document.querySelector('{selector}');
-                if (!el) return false;
-                const proto = el.tagName === 'TEXTAREA'
-                    ? window.HTMLTextAreaElement.prototype
-                    : window.HTMLInputElement.prototype;
-                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                if (setter) setter.call(el, {repr(value)});
-                else el.value = {repr(value)};
-                el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                return true;
-            }}"""
+        def _preenche_campo(selector, value):
+            """JS com value passado como parâmetro — evita injeção e funciona com Vue."""
+            return (
+                f"""(val) => {{
+                    const el = document.querySelector('{selector}');
+                    if (!el) return false;
+                    const proto = el.tagName === 'TEXTAREA'
+                        ? window.HTMLTextAreaElement.prototype
+                        : window.HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                    if (setter) setter.call(el, val);
+                    else el.value = val;
+                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    return true;
+                }}""",
+                value,
+            )
 
-        # Preenche OC
+        # Preenche OC (aba Principal)
         if oc:
-            ok = await edit_page.evaluate(_set_value_js("#freight_normal_reference_number", oc))
+            try:
+                await edit_page.wait_for_selector(
+                    "#freight_normal_reference_number", state="attached", timeout=5000
+                )
+            except Exception:
+                pass
+            js_oc, val_oc = _preenche_campo("#freight_normal_reference_number", oc)
+            ok = await edit_page.evaluate(js_oc, val_oc)
             logger.info("OC preenchida: %s", oc) if ok else logger.warning("Campo OC nao encontrado.")
 
         if tipo == "TRANSFERENCIA":
             if numero_pbr:
-                try:
-                    await edit_page.wait_for_selector(
-                        "#freight_normal_comments", state="attached", timeout=5000
-                    )
-                except Exception:
-                    pass
-                valor_pbr = f"{numero_pbr} NUMERO DA NOTA DE PALETES"
-                ok = await edit_page.evaluate(_set_value_js("#freight_normal_comments", valor_pbr))
-                logger.info("PBR preenchido: %s", numero_pbr) if ok else logger.warning("Campo comments nao encontrado.")
+                # O campo Observações fica na aba "Outros dados" — navega até ela
+                await edit_page.evaluate("""() => {
+                    const tab = Array.from(document.querySelectorAll('a.btn-sticky'))
+                        .find(t => /outros\s+dados/i.test(t.textContent.trim()));
+                    if (tab) tab.click();
+                }""")
+                await edit_page.wait_for_timeout(600)
+                valor_pbr = f"NOTA DE PBR {numero_pbr}"
+                ok = await edit_page.evaluate("""(val) => {
+                    // Tenta seletores específicos da aba Outros Dados
+                    const candidates = [
+                        '#freight_normal_observations',
+                        '#freight_normal_notes',
+                        'textarea[name*="observations"]',
+                        'textarea[name*="notes"]',
+                        'textarea[name*="comments"]',
+                    ];
+                    let el = null;
+                    for (const sel of candidates) {
+                        el = document.querySelector(sel);
+                        if (el) break;
+                    }
+                    // Fallback: primeiro textarea visível na página
+                    if (!el) {
+                        el = Array.from(document.querySelectorAll('textarea'))
+                            .find(t => t.offsetParent !== null);
+                    }
+                    if (!el) return false;
+                    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+                    if (setter) setter.call(el, val);
+                    else el.value = val;
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                    return el.id || el.name || 'textarea-fallback';
+                }""", valor_pbr)
+                logger.info("PBR preenchido via '%s': %s", ok, numero_pbr) if ok else logger.warning("Campo Observacoes nao encontrado.")
 
         elif tipo == "COLETA DE PBR":
             await _select2_selecionar_por_nome(
