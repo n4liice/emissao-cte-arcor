@@ -649,18 +649,25 @@ async def _executar_importacao(
             _lote_id = lote or (_m_lote_url.group(1) if _m_lote_url else None)
             MAX_CHECKS_PEND = 20
             for _chk in range(MAX_CHECKS_PEND):
-                # Sempre força um reload — sem isso o badge "Inconsistentes - N" fica
-                # com o valor em cache da carga anterior da página e nunca reflete a correção.
                 if _lote_id:
+                    # Recarrega a página específica do lote — aqui um goto é seguro.
                     await page.goto(f"{BASE_URL}/edi/import/batches/{_lote_id}")
-                else:
-                    await page.reload()
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=15000)
-                except Exception:
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=15000)
+                    except Exception:
+                        await page.wait_for_timeout(2000)
+                    await page.click('a[href="#tab-freights"]')
                     await page.wait_for_timeout(2000)
-                await page.click('a[href="#tab-freights"]')
-                await page.wait_for_timeout(2000)
+                else:
+                    # Sem lote_id não dá pra recarregar a página do lote (ela só existe
+                    # via navegação SPA/AJAX depois de criada — um page.reload() perde o
+                    # painel inteiro e o clique em #tab-freights nunca mais acha o elemento).
+                    # Alterna as abas, igual ao Passo 19, para forçar o ESL Cloud a
+                    # re-renderizar o conteúdo via AJAX sem perder o contexto do lote.
+                    await page.click('a[href="#tab-invoices"]')
+                    await page.wait_for_timeout(1500)
+                    await page.click('a[href="#tab-freights"]')
+                    await page.wait_for_timeout(2000)
 
                 # Clica em Pendentes
                 await page.evaluate("""() => {
