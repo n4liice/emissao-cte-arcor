@@ -649,14 +649,18 @@ async def _executar_importacao(
             _lote_id = lote or (_m_lote_url.group(1) if _m_lote_url else None)
             MAX_CHECKS_PEND = 20
             for _chk in range(MAX_CHECKS_PEND):
+                # Sempre força um reload — sem isso o badge "Inconsistentes - N" fica
+                # com o valor em cache da carga anterior da página e nunca reflete a correção.
                 if _lote_id:
                     await page.goto(f"{BASE_URL}/edi/import/batches/{_lote_id}")
-                    try:
-                        await page.wait_for_load_state("networkidle", timeout=15000)
-                    except Exception:
-                        await page.wait_for_timeout(2000)
-                    await page.click('a[href="#tab-freights"]')
+                else:
+                    await page.reload()
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
                     await page.wait_for_timeout(2000)
+                await page.click('a[href="#tab-freights"]')
+                await page.wait_for_timeout(2000)
 
                 # Clica em Pendentes
                 await page.evaluate("""() => {
