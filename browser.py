@@ -643,31 +643,18 @@ async def _executar_importacao(
             corrigidos = await _corrigir_inconsistentes(page)
             logger.info("Inconsistentes corrigidos: %d", corrigidos)
 
-            # Após corrigir: recarrega → clica Pendentes → confirma que saiu de Inconsistentes
-            import re as _re_lote
-            _m_lote_url = _re_lote.search(r'/batches/(\d+)', page.url)
-            _lote_id = lote or (_m_lote_url.group(1) if _m_lote_url else None)
+            # Após corrigir: alterna as abas → clica Pendentes → confirma que saiu de Inconsistentes
+            # Nota: navegar direto para /edi/import/batches/<id> (via goto ou reload) NÃO
+            # funciona — essa URL não renderiza as abas quando acessada fora do fluxo de
+            # criação, e o clique em #tab-freights trava em timeout. Por isso alternamos
+            # as abas do painel já aberto, igual ao Passo 19, para forçar o ESL Cloud a
+            # re-renderizar o conteúdo via AJAX sem perder o contexto do lote.
             MAX_CHECKS_PEND = 20
             for _chk in range(MAX_CHECKS_PEND):
-                if _lote_id:
-                    # Recarrega a página específica do lote — aqui um goto é seguro.
-                    await page.goto(f"{BASE_URL}/edi/import/batches/{_lote_id}")
-                    try:
-                        await page.wait_for_load_state("networkidle", timeout=15000)
-                    except Exception:
-                        await page.wait_for_timeout(2000)
-                    await page.click('a[href="#tab-freights"]')
-                    await page.wait_for_timeout(2000)
-                else:
-                    # Sem lote_id não dá pra recarregar a página do lote (ela só existe
-                    # via navegação SPA/AJAX depois de criada — um page.reload() perde o
-                    # painel inteiro e o clique em #tab-freights nunca mais acha o elemento).
-                    # Alterna as abas, igual ao Passo 19, para forçar o ESL Cloud a
-                    # re-renderizar o conteúdo via AJAX sem perder o contexto do lote.
-                    await page.click('a[href="#tab-invoices"]')
-                    await page.wait_for_timeout(1500)
-                    await page.click('a[href="#tab-freights"]')
-                    await page.wait_for_timeout(2000)
+                await page.click('a[href="#tab-invoices"]')
+                await page.wait_for_timeout(1500)
+                await page.click('a[href="#tab-freights"]')
+                await page.wait_for_timeout(2000)
 
                 # Clica em Pendentes
                 await page.evaluate("""() => {
@@ -711,8 +698,7 @@ async def _executar_importacao(
     passo = "Passo 21 — Preencher dados dos fretes"
     try:
         logger.info(passo)
-        batch_url = f"{BASE_URL}/edi/import/batches/{lote}" if lote else None
-        await _preencher_fretes(page, batch_url, oc=oc, tipo_operacao=tipo_operacao, numero_pbr=numero_pbr)
+        await _preencher_fretes(page, oc=oc, tipo_operacao=tipo_operacao, numero_pbr=numero_pbr)
     except Exception as e:
         return await _erro(page, passo, e)
 
@@ -1629,7 +1615,6 @@ async def _select2_selecionar(page, select_id: str, texto: str):
 
 async def _preencher_fretes(
     page,
-    batch_url: str | None,
     oc: str | None = None,
     tipo_operacao: str = "TRANSFERENCIA",
     numero_pbr: str | None = None,
@@ -1650,12 +1635,18 @@ async def _preencher_fretes(
                 await edit_page.close()
             except Exception:
                 pass
-        if batch_url:
-            await page.goto(batch_url)
+        else:
+            # O lápis navegou na mesma aba, então "page" saiu do painel do lote.
+            # goto(batch_url) não funciona — essa URL não renderiza as abas quando
+            # acessada fora do fluxo de criação. Usa o histórico do navegador para voltar.
             try:
-                await page.wait_for_load_state("networkidle", timeout=15000)
+                await page.go_back()
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    await page.wait_for_timeout(2000)
             except Exception:
-                await page.wait_for_timeout(2000)
+                pass
         try:
             await page.wait_for_selector('a[href="#tab-freights"]', state="visible", timeout=10000)
         except Exception:
