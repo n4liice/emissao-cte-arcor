@@ -848,6 +848,27 @@ async def _executar_importacao(
         contadores = await _status_tab()
         logger.info("Status final: %s", contadores)
 
+        # Extrai o(s) número(s) do CT-e da tabela filtrada por "Autorizados".
+        # A coluna do CT-e é um <div class="table-text" title="280509/"> — o "/"
+        # no final distingue de outras colunas numéricas (ex: OC).
+        numeros_cte = await page.evaluate(
+            """() => {
+                const tab = document.querySelector('#tab-freights');
+                if (!tab) return [];
+                const nums = [];
+                tab.querySelectorAll('tbody tr').forEach(tr => {
+                    tr.querySelectorAll('td .table-text[title]').forEach(div => {
+                        const title = (div.getAttribute('title') || '').trim();
+                        if (/^\\d+\\/$/.test(title)) {
+                            nums.push(title.replace(/\\/$/, ''));
+                        }
+                    });
+                });
+                return nums;
+            }"""
+        )
+        logger.info("Número(s) de CT-e encontrado(s): %s", numeros_cte)
+
         if contadores["autorizados"] > 0 and contadores["inconsistentes"] == 0 and contadores["rejeitados"] == 0:
             status_cte = "OK"
         elif contadores["inconsistentes"] > 0:
@@ -866,6 +887,8 @@ async def _executar_importacao(
             "lote":       str(lote) if lote else None,
             "documentos": len(xml_files),
             "status_cte": status_cte,
+            "numero_cte": numeros_cte[0] if numeros_cte else None,
+            "numeros_cte": numeros_cte,
             "screenshot": screenshot_b64,
         }
 
@@ -1677,14 +1700,32 @@ async def _preencher_fretes(
             if await confirm.is_visible(timeout=2000):
                 await confirm.click()
                 await edit_page.wait_for_timeout(1000)
+                logger.info("Salvar do frete: modal de confirmação apareceu e foi clicado.")
+            else:
+                logger.info("Salvar do frete: nenhum modal de confirmação apareceu (redirect direto?).")
         except Exception:
-            pass
+            logger.info("Salvar do frete: nenhum modal de confirmação apareceu (redirect direto?).")
         # Aguarda qualquer spinner desaparecer antes de continuar
         try:
             await edit_page.wait_for_function(
                 "() => !document.querySelector('.fa-spinner, .fa-spin, [class*=\"loading\"]')",
                 timeout=15000,
             )
+        except Exception:
+            pass
+        # Verifica se apareceu algum toast/alerta de erro de validação após salvar
+        try:
+            erro_toast = await edit_page.evaluate(
+                """() => {
+                    const els = Array.from(document.querySelectorAll(
+                        '.toast-error, .alert-danger, .swal2-popup.swal2-icon-error, [class*="error"]'
+                    ));
+                    const visivel = els.find(e => e.offsetParent !== null && (e.textContent || '').trim());
+                    return visivel ? visivel.textContent.trim().slice(0, 300) : null;
+                }"""
+            )
+            if erro_toast:
+                logger.warning("Possível erro após salvar o frete: %s", erro_toast)
         except Exception:
             pass
 
@@ -1740,46 +1781,40 @@ async def _preencher_fretes(
                 pass
             js_oc, val_oc = _preenche_campo("#freight_normal_reference_number", oc)
             ok = await edit_page.evaluate(js_oc, val_oc)
-            logger.info("OC preenchida: %s", oc) if ok else logger.warning("Campo OC nao encontrado.")
+            if ok:
+                valor_lido = await edit_page.evaluate(
+                    "() => document.querySelector('#freight_normal_reference_number')?.value"
+                )
+                logger.info("OC preenchida: %s (valor lido de volta no campo: %s)", oc, valor_lido)
+            else:
+                logger.warning("Campo OC nao encontrado.")
 
         if tipo == "TRANSFERENCIA":
             if numero_pbr:
-                # O campo Observações fica na aba "Outros dados" — navega até ela
+                # O campo Observações (name="freight_normal[comments]", id
+                # "freight_normal_comments") fica na aba "Outros dados" — navega até ela.
                 await edit_page.evaluate("""() => {
                     const tab = Array.from(document.querySelectorAll('a.btn-sticky'))
                         .find(t => /outros\s+dados/i.test(t.textContent.trim()));
                     if (tab) tab.click();
                 }""")
                 await edit_page.wait_for_timeout(600)
+                try:
+                    await edit_page.wait_for_selector(
+                        "#freight_normal_comments", state="attached", timeout=5000
+                    )
+                except Exception:
+                    pass
                 valor_pbr = f"NOTA DE PBR {numero_pbr}"
-                ok = await edit_page.evaluate("""(val) => {
-                    // Tenta seletores específicos da aba Outros Dados
-                    const candidates = [
-                        '#freight_normal_observations',
-                        '#freight_normal_notes',
-                        'textarea[name*="observations"]',
-                        'textarea[name*="notes"]',
-                        'textarea[name*="comments"]',
-                    ];
-                    let el = null;
-                    for (const sel of candidates) {
-                        el = document.querySelector(sel);
-                        if (el) break;
-                    }
-                    // Fallback: primeiro textarea visível na página
-                    if (!el) {
-                        el = Array.from(document.querySelectorAll('textarea'))
-                            .find(t => t.offsetParent !== null);
-                    }
-                    if (!el) return false;
-                    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-                    if (setter) setter.call(el, val);
-                    else el.value = val;
-                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                    el.dispatchEvent(new Event('change', {bubbles: true}));
-                    return el.id || el.name || 'textarea-fallback';
-                }""", valor_pbr)
-                logger.info("PBR preenchido via '%s': %s", ok, numero_pbr) if ok else logger.warning("Campo Observacoes nao encontrado.")
+                js_pbr, val_pbr = _preenche_campo("#freight_normal_comments", valor_pbr)
+                ok = await edit_page.evaluate(js_pbr, val_pbr)
+                if ok:
+                    valor_lido = await edit_page.evaluate(
+                        "() => document.querySelector('#freight_normal_comments')?.value"
+                    )
+                    logger.info("PBR preenchido: %s (valor lido de volta no campo: %s)", numero_pbr, valor_lido)
+                else:
+                    logger.warning("Campo Observacoes (#freight_normal_comments) nao encontrado.")
 
         elif tipo == "COLETA DE PBR":
             await _select2_selecionar_por_nome(
